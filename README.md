@@ -64,8 +64,8 @@ Marketplaces (Amazon, Myntra, Meesho)
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/resight.git
-cd resight
+git clone https://github.com/yourusername/RetailerDashboard_ReSight.git
+cd RetailerDashboard_ReSight
 ```
 
 ### 2. Backend Setup
