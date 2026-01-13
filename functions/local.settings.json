@@ -1,0 +1,10 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "AZURE_ML_ENDPOINT": "PASTE_YOUR_ENDPOINT_URL_HERE",
+    "AZURE_ML_KEY": "PASTE_YOUR_ENDPOINT_KEY_HERE"
+  }
+}

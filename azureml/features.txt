@@ -1,0 +1,16 @@
+verified_purchase
+helpful_votes
+price
+avg_rating
+rating_count
+year
+month
+day_of_week
+hour
+recency_weight
+category
+region
+store
+main_category
+popularity_bucket
+price_bucket

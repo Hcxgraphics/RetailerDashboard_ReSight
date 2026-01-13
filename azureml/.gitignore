@@ -1,0 +1,10 @@
+# Azure ML Credentials
+credentials.json
+config.json
+*.pem
+*.key
+
+# Keep model artifacts but ignore credentials
+# lightgbm_ranker.pkl - KEEP
+# encoders.pkl - KEEP
+# features.txt - KEEP
