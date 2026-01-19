@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useParams } from "react-router-dom";
 import { useLocation } from 'react-router-dom';
 import { MessageSquare, Send, Sparkles, TrendingUp, Package, BarChart3, Zap, Bot, History, X, Trash2 } from 'lucide-react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
@@ -36,9 +37,20 @@ const suggestions = [
 
 const AskAI = () => {
   const location = useLocation();
+  const params = useParams();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  
+  // Get current page context from route
+  const getPageContext = (): string => {
+    const path = location.pathname;
+    if (path.includes('/inspector')) return 'item_inspector';
+    if (path.includes('/what-if') || path.includes('/whatif')) return 'what_if';
+    if (path.includes('/rules') || path.includes('/controls')) return 'manual_controls';
+    if (path.includes('/bias')) return 'bias';
+    return 'overview';
+  };
   const [chatHistory, setChatHistory] = useState<ChatSession[]>(() => {
     const stored = localStorage.getItem('resights_chat_history');
     return stored ? JSON.parse(stored) : [];
@@ -146,16 +158,38 @@ const AskAI = () => {
     setInputValue('');
     setIsLoading(true);
 
-    // Simulate AI response
-    setTimeout(() => {
+    try {
+      // Build context from current page
+      const page = getPageContext();
+      const selectedItemId = params.id || null;
+      
+      // Call Ask AI API
+      const answer = await askAI({
+        question: messageText,
+        context: {
+          page,
+          selected_item_id: selectedItemId,
+          filters: {}, // Can be extended to include active filters from state
+        },
+      });
+
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: `Based on your question about "${messageText.slice(0, 50)}${messageText.length > 50 ? '...' : ''}", here's my analysis:\n\nThe recommendation engine considers multiple factors including purchase history, popularity trends, and seasonal patterns. I've analyzed the current data and can provide insights on how these factors interact to influence rankings and visibility.\n\nKey observations:\n• Product performance metrics show positive trends\n• Seasonal factors are currently neutral\n• Inventory levels are within optimal range\n\nWould you like me to dive deeper into any specific aspect?`,
+        content: answer,
       };
       setMessages((prev) => [...prev, assistantMessage]);
+    } catch (error) {
+      console.error('Error calling Ask AI:', error);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: '• Unable to connect to AI service. Please check if the backend is running and try again.',
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
       setIsLoading(false);
-    }, 1500);
+    }
   };
 
   const handleSuggestionClick = (suggestion: string) => {

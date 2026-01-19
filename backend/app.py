@@ -8,11 +8,13 @@ import json
 import joblib
 import numpy as np
 import pandas as pd
+import requests
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import func, desc
 import shap
 from datetime import datetime, timedelta
 import asyncio
@@ -293,6 +295,11 @@ class MarketplaceWebhook(BaseModel):
     clicks: Optional[int] = None
     orders: Optional[int] = None
     metadata: Optional[Dict] = None
+
+
+class AskAIRequest(BaseModel):
+    question: str
+    context: Dict[str, Any]
 
 
 # API Endpoints
@@ -777,6 +784,238 @@ async def meesho_webhook(webhook_data: MarketplaceWebhook, db: Session = Depends
     )
     
     return {"status": "ok", "item_id": product.item_id}
+
+
+# Ask AI - Retail Co-Pilot
+
+SYSTEM_PROMPT = """
+You are a retail analytics co-pilot for an e-commerce dashboard.
+
+Rules:
+- Max 5 bullet points
+- Each bullet ≤ 15 words
+- No introductions
+- No conclusions
+- No emojis
+- Focus on business actions
+- If question is out of scope, return one bullet saying so
+- Use only the provided context
+"""
+
+
+async def build_retail_context(context: Dict[str, Any], db: Session, data_api: RetailDataAPI) -> str:
+    """Build context string from database, ML scores, and dashboard state"""
+    ctx_parts = []
+    
+    # Always include global KPIs
+    kpis = data_api.get_global_kpis()
+    ctx_parts.append(f"""
+Global KPIs:
+- Revenue: ₹{kpis.get('revenue', 0):,.0f}
+- Views: {kpis.get('views', 0):,}
+- Clicks: {kpis.get('clicks', 0):,}
+- Active Products: {kpis.get('activeProducts', 0)}
+- Avg Order Value: ₹{kpis.get('avgOrderValue', 0):,.0f}
+""")
+    
+    # Top categories by revenue
+    since = datetime.utcnow() - timedelta(days=30)
+    events = db.query(Event).filter(Event.timestamp >= since).all()
+    
+    category_revenue = {}
+    for event in events:
+        if event.event_type == EventType.PURCHASE and event.revenue:
+            product = data_api.get_product_by_id(event.item_id)
+            if product:
+                cat = product.category or "Unknown"
+                category_revenue[cat] = category_revenue.get(cat, 0) + event.revenue
+    
+    top_categories = sorted(category_revenue.items(), key=lambda x: x[1], reverse=True)[:5]
+    if top_categories:
+        ctx_parts.append(f"""
+Top Categories (by revenue):
+{chr(10).join([f"- {cat}: ₹{rev:,.0f}" for cat, rev in top_categories])}
+""")
+    
+    # Low-performing products (low stock + low clicks)
+    products = data_api.get_all_products(active_only=True)
+    low_performers = []
+    for product in products[:50]:  # Limit to avoid too much data
+        metrics = data_api.get_product_metrics(product.item_id, days=7)
+        ml_score = data_api.get_product_ml_score(product.item_id)
+        
+        if product.stock < 10 or (metrics.get('clicks', 0) < 10 and ml_score and ml_score.rank > 50):
+            low_performers.append({
+                'item_id': product.item_id,
+                'title': product.title[:50],
+                'stock': product.stock,
+                'clicks': metrics.get('clicks', 0),
+                'rank': ml_score.rank if ml_score else 999
+            })
+    
+    if low_performers:
+        low_performers = sorted(low_performers, key=lambda x: x['rank'])[:5]
+        ctx_parts.append(f"""
+Low-Performing Products:
+{chr(10).join([f"- {p['title']}: Stock={p['stock']}, Clicks={p['clicks']}, Rank={p['rank']}" for p in low_performers])}
+""")
+    
+    # Page-specific context
+    page = context.get('page', 'overview')
+    selected_item_id = context.get('selected_item_id')
+    filters = context.get('filters', {})
+    
+    if page == "item_inspector" and selected_item_id:
+        product = data_api.get_product_by_id(selected_item_id)
+        if product:
+            metrics = data_api.get_product_metrics(selected_item_id)
+            ml_score = data_api.get_product_ml_score(selected_item_id)
+            
+            ctx_parts.append(f"""
+Selected Item: {product.title}
+- Price: ₹{product.price:,.0f}
+- Stock: {product.stock}
+- Rank: {ml_score.rank if ml_score else 'N/A'}
+- ML Score: {ml_score.score:.4f if ml_score else 'N/A'}
+- Views: {metrics.get('views', 0)}
+- Clicks: {metrics.get('clicks', 0)}
+- Revenue: ₹{metrics.get('revenue', 0):,.0f}
+""")
+            
+            # Get SHAP explanation
+            try:
+                # Prepare features for SHAP
+                now = datetime.utcnow()
+                item_dict = {
+                    "item_id": product.item_id,
+                    "price": product.price,
+                    "stock": product.stock,
+                    "verified_purchase": product.verified_purchase or 0.0,
+                    "helpful_votes": product.helpful_votes or 0,
+                    "avg_rating": product.avg_rating or 0.0,
+                    "rating_count": product.rating_count or 0,
+                    "year": now.year,
+                    "month": now.month,
+                    "day_of_week": now.weekday(),
+                    "hour": now.hour,
+                    "recency_weight": 0.8,
+                    "category": product.category,
+                    "region": product.region or "IN",
+                    "store": product.store.name if product.store else "online",
+                    "main_category": product.main_category or product.category,
+                    "popularity_bucket": product.popularity_bucket or "medium",
+                    "price_bucket": product.price_bucket or "mid",
+                }
+                
+                X, _ = prepare_features([item_dict])
+                
+                global explainer
+                if explainer is None and model:
+                    explainer = shap.TreeExplainer(model)
+                
+                if explainer and model:
+                    shap_values = explainer.shap_values(X)
+                    if len(shap_values.shape) == 1:
+                        shap_dict = dict(zip(FEATURES, shap_values))
+                    else:
+                        shap_dict = dict(zip(FEATURES, shap_values[0]))
+                    
+                    # Top positive and negative features
+                    shap_items = sorted(shap_dict.items(), key=lambda x: abs(x[1]), reverse=True)
+                    top_positive = [f"{k}: +{(v*100):.1f}%" for k, v in shap_items[:3] if v > 0]
+                    top_negative = [f"{k}: {(v*100):.1f}%" for k, v in shap_items[:3] if v < 0]
+                    
+                    if top_positive:
+                        ctx_parts.append(f"Top Positive Features: {', '.join(top_positive)}")
+                    if top_negative:
+                        ctx_parts.append(f"Top Negative Features: {', '.join(top_negative)}")
+            except Exception as e:
+                logger.warning(f"Could not get SHAP for context: {e}")
+    
+    if page == "manual_controls":
+        rules = data_api.get_active_rules()
+        pinned = [r for r in rules if r.rule_type == RuleType.PIN]
+        boosted = [r for r in rules if r.rule_type == RuleType.BOOST]
+        
+        ctx_parts.append(f"""
+Active Rules:
+- Pinned Items: {len(pinned)}
+- Boosted Items: {len(boosted)}
+""")
+    
+    if filters:
+        ctx_parts.append(f"Active Filters: {filters}")
+    
+    return "\n".join(ctx_parts)
+
+
+async def call_ollama(prompt: str) -> str:
+    """Call Ollama LLM API"""
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+    
+    try:
+        response = requests.post(
+            ollama_url,
+            json={
+                "model": "mistral",
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": 150
+                }
+            },
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return "• LLM service temporarily unavailable"
+        
+        # Parse streaming response
+        final_answer = ""
+        for line in response.text.splitlines():
+            if line.strip():
+                try:
+                    data = json.loads(line)
+                    final_answer += data.get("response", "")
+                except json.JSONDecodeError:
+                    pass
+        
+        return final_answer.strip() if final_answer else "• No response from AI model"
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Ollama connection error: {e}")
+        return "• AI service temporarily unavailable. Please try again later."
+
+
+@app.post("/ask-ai")
+async def ask_ai(request: AskAIRequest, db: Session = Depends(get_db)):
+    """Ask AI Retail Co-Pilot - Context-aware analytics assistant"""
+    data_api = RetailDataAPI(db)
+    
+    try:
+        # Build context from database and ML
+        retail_context = await build_retail_context(request.context, db, data_api)
+        
+        # Construct prompt
+        prompt = f"""
+{SYSTEM_PROMPT}
+
+Dashboard Context:
+{retail_context}
+
+User Question: {request.question}
+
+Answer:
+"""
+        
+        # Call LLM
+        answer = await call_ollama(prompt)
+        
+        return {"answer": answer}
+        
+    except Exception as e:
+        logger.error(f"Error in ask-ai endpoint: {e}")
+        return {"answer": "• Unable to process request. Please try again."}
 
 
 # WebSocket for real-time updates
