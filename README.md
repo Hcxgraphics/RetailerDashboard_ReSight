@@ -13,6 +13,7 @@
 ReSight adds **trust**, **control**, and **visibility** to retail AI by:
 - 🔍 **Explainable AI**: SHAP values show exactly why each product ranks where it does
 - 🎮 **What-If Simulator**: Test price changes, stock adjustments, and promotions before deploying
+- 🤖 **Ask AI (Retail Copilot)**: Chat-based assistant to query live dashboard data, rankings, risks, and actions in natural language
 - 🎛️ **Manual Overrides**: Pin, boost, or demote products with full audit trails
 - 📊 **Real-Time KPIs**: Live dashboard updates via WebSocket showing revenue, views, clicks, and conversions
 - 🔄 **Mock + Live Modes**: Works with simulated data or real marketplace webhooks
@@ -29,8 +30,9 @@ Marketplaces (Amazon, Myntra, Meesho)
   LightGBM ML Engine
          ↓
   FastAPI Backend
-         ↓
-  React Dashboard (Real-Time)
+       ↙       ↘
+Ask AI Copilot   React Dashboard (Real-Time)
+
 ```
 
 ## ✨ Features
@@ -184,6 +186,11 @@ curl -X POST http://localhost:8000/integrations/meesho/webhook \
 - `GET /item/{item_id}` - Get product details with ML score
 - `GET /explain/{item_id}` - Get SHAP feature importance
 
+### Ask AI
+
+- `POST /ask-ai` – Ask natural language questions about dashboard data and recommendations
+
+
 ### What-If & Rules
 
 - `POST /whatif/price` - Simulate price change impact
@@ -255,6 +262,7 @@ resight/
 │   ├── lightgbm_ranker.pkl
 │   ├── encoders.pkl
 │   └── features.txt
+├── chatbot.py          # Ask AI (Retail Copilot)
 ├── .env.example        # Environment template
 ├── .gitignore          # Git ignore rules
 ├── Procfile            # Heroku deployment
