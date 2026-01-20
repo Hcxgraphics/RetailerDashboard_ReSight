@@ -216,14 +216,14 @@ class MLScore(Base):
 # Database connection
 def get_database_url():
     """Get database URL from environment or use SQLite for local dev"""
-    import os
-    db_url = os.getenv("DATABASE_URL", "sqlite:///./retail_data.db")
-    return db_url
+    return os.getenv("DATABASE_URL", "sqlite:///./retail_data.db")
 
+
+DATABASE_URL = get_database_url()
 
 engine = create_engine(
-    get_database_url(),
-    connect_args={"check_same_thread": False} if "sqlite" in get_database_url() else {},
+    DATABASE_URL,
+    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
     echo=False  # Set to True for SQL query logging
 )
 
